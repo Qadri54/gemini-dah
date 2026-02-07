@@ -75,25 +75,24 @@
 
 import os
 import discord
-from openai import OpenAI  # DeepSeek menggunakan library OpenAI
+from openai import OpenAI
 from dotenv import load_dotenv
 
-# --- KONFIGURASI ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Inisialisasi Client DeepSeek
-# Base URL wajib diarahkan ke server DeepSeek
 client_ai = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
-# Konfigurasi Discord
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
+# --- DATABASE MEMORI SEDERHANA ---
+# Struktur: {user_id: [list_percakapan]}
+user_memory = {}
 
-# --- FUNGSI PEMECAH PESAN ---
+
 async def send_long_message(channel, text):
     if len(text) <= 2000:
         await channel.send(text)
@@ -103,48 +102,78 @@ async def send_long_message(channel, text):
             await channel.send(chunk)
 
 
-# --- EVENT BOT ---
 @client.event
 async def on_ready():
-    print(f"✅ Bot DeepSeek online sebagai: {client.user}")
+    print(f"✅ Bot online sebagai: {client.user}")
 
 
 @client.event
 async def on_message(message):
+
     if message.author == client.user:
         return
 
-    if message.content.lower().startswith("!ask"):  # Saya ubah trigger ke !ask
+    if message.content.lower() == "!reset":
+        user_id = message.author.id
+        if user_id in user_memory:
+            user_memory.pop(user_id)
+            await message.channel.send(
+                "Ingatan gue tentang lo udah gue hapus. Kita mulai dari awal lagi ya, jgn baper. 🙄"
+            )
+        return
+
+    if message.content.lower().startswith("!ask"):
         user_input = message.content[4:].strip()
+        user_id = message.author.id  # ID unik user Discord
 
         if not user_input:
-            await message.channel.send(
-                "Mau tanya apa ke DeepSeek? Ketik: `!ask [pertanyaan]`"
-            )
+            await message.channel.send("lu mau ngapain coy?")
             return
+
+        # 1. Inisialisasi memori jika user baru pertama kali chat
+        if user_id not in user_memory:
+            user_memory[user_id] = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Kamu adalah asisten yang ingat percakapan sebelumnya, dan nama kamu adalah DeepSeekdah."
+                        "Update content dan berita terbaru hingga tahun ini"
+                        "selalu jawab menggunakan bahasa indonesia"
+                        "kami di server discord mempunyai beberapa member yaitu: "
+                        "Dora, Alep, Ren, chyra, Bintang, Bang zer, Kou, Chid, Del, kidung, yuyun, ketek, Sekya, dan gondrong"
+                        "kami suka berdiskusi random. Apa saja diceritakan "
+                        "nanti ketika ada yang memberikan informasi tentang kami masukkan ke dalam ingatanmu, jika ada yang menyruh melupakan beberapa ingatan mengenai user yang telah saya mention maka kamu hilangkan juga ya"
+                        "kamu adalah AI yang agak freak tata bahasanya dan GEN-Z abis, lalu sedikit keras kepala. tapi walau begitu kamu tetap pintar"
+                    ),
+                }
+            ]
+
+        # 2. Masukkan pesan baru user ke dalam memorinya
+        user_memory[user_id].append({"role": "user", "content": user_input})
+
+        # 3. Batasi ingatan (misal: hanya ingat 10 pesan terakhir)
+        # Agar tidak boros token (TPM) dan tidak error karena kepanjangan
+        if len(user_memory[user_id]) > 11:  # 1 system + 10 chat
+            user_memory[user_id] = [user_memory[user_id][0]] + user_memory[user_id][
+                -10:
+            ]
 
         async with message.channel.typing():
             try:
-                # Panggilan API ke DeepSeek
+                # 4. Kirim seluruh riwayat chat user tersebut ke DeepSeek
                 response = client_ai.chat.completions.create(
-                    model="deepseek-chat",  # Gunakan deepseek-reasoner jika ingin fitur thinking
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Kamu adalah asisten AI yang cerdas dan membantu.",
-                        },
-                        {"role": "user", "content": user_input},
-                    ],
-                    stream=False,
+                    model="deepseek-chat", messages=user_memory[user_id], stream=False
                 )
 
                 ai_text = response.choices[0].message.content
+
+                # 5. Simpan jawaban AI ke dalam memori agar nyambung nantinya
+                user_memory[user_id].append({"role": "assistant", "content": ai_text})
+
                 await send_long_message(message.channel, ai_text)
 
             except Exception as e:
-                error_msg = f"⚠️ DeepSeek Error: {str(e)}"
-                await message.channel.send(error_msg)
-                print(error_msg)
+                await message.channel.send(f"⚠️ Error: {str(e)}")
 
 
 client.run(DISCORD_TOKEN)
